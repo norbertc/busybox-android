@@ -698,7 +698,7 @@ static void parse_resolvconf(void)
 {
 	FILE *resolv;
 
-	resolv = fopen("/etc/resolv.conf", "r");
+	resolv = fopen("/system/etc/resolv.conf", "r");
 	if (resolv) {
 		char line[512];	/* "search" is defined to be up to 256 chars */
 
@@ -931,9 +931,9 @@ int nslookup_main(int argc UNUSED_PARAM, char **argv)
 		add_ns(argv[1]);
 	} else {
 		parse_resolvconf();
-		/* Fall back to localhost if we could not find NS in resolv.conf */
+		/* Fall back to Google DNS server if we could not find NS in resolv.conf */
 		if (G.serv_count == 0)
-			add_ns("127.0.0.1");
+			add_ns("8.8.8.8");
 	}
 
 	if (types == 0) {
