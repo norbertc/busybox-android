@@ -111,9 +111,10 @@ lib-y += xgetcwd.o
 lib-y += xgethostbyname.o
 lib-y += xreadlink.o
 lib-y += xrealloc_vector.o
-
-# for android-busybox-ndk
+#ifdef __ANDROID__
+lib-y += bb_regex.o
 lib-y += mntent_r.o
+#endif
 
 lib-$(CONFIG_PLATFORM_LINUX) += match_fstype.o
 
