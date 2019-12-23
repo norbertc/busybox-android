@@ -2127,21 +2127,18 @@ extern const char bb_path_wtmp_file[] ALIGN1;
 #define bb_path_shadow_file  _PATH_SHADOW
 #define bb_path_gshadow_file _PATH_GSHADOW
 
-#define bb_path_motd_file "/etc/motd"
+#define bb_path_motd_file "/system/etc/motd"
 
 #define bb_dev_null "/dev/null"
 extern const char bb_busybox_exec_path[] ALIGN1;
 /* allow default system PATH to be extended via CFLAGS */
-#ifndef BB_ADDITIONAL_PATH
-#define BB_ADDITIONAL_PATH ""
-#endif
-#define BB_PATH_ROOT_PATH "PATH=/sbin:/usr/sbin:/bin:/usr/bin" BB_ADDITIONAL_PATH
+#define BB_PATH_ROOT_PATH "PATH=/sbin:/system/sbin:/product/bin:/apex/com.android.runtime/bin:/system/bin:/system/xbin:/odm/bin:/vendor/bin:/vendor/xbin"
 extern const char bb_PATH_root_path[] ALIGN1; /* BB_PATH_ROOT_PATH */
 #define bb_default_root_path (bb_PATH_root_path + sizeof("PATH"))
 /* util-linux manpage says /sbin:/bin:/usr/sbin:/usr/bin,
  * but I want to save a few bytes here:
  */
-#define bb_default_path      (bb_PATH_root_path + sizeof("PATH=/sbin:/usr/sbin"))
+#define bb_default_path      (bb_PATH_root_path + sizeof("PATH=/sbin:/system/sbin:/product/bin:/apex/com.android.runtime/bin:/system/bin:/system/xbin:/odm/bin:/vendor/bin:/vendor/xbin"))
 
 extern const int const_int_0;
 //extern const int const_int_1;

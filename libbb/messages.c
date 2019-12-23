@@ -6,12 +6,7 @@
  */
 #include "libbb.h"
 
-/* allow version to be extended, via CFLAGS */
-#ifndef BB_EXTRA_VERSION
-#define BB_EXTRA_VERSION " ("AUTOCONF_TIMESTAMP")"
-#endif
-
-const char bb_banner[] ALIGN1 = "BusyBox v" BB_VER BB_EXTRA_VERSION;
+const char bb_banner[] ALIGN1 = "BusyBox v" BB_VER;
 
 
 const char bb_msg_memory_exhausted[] ALIGN1 = "out of memory";
