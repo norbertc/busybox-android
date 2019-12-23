@@ -148,9 +148,9 @@ endif
 # fall back to using a temp file:
 CRYPT_AVAILABLE := $(shell echo 'int main(void){return 0;}' >crypttest.c; $(CC) $(CFLAGS) -lcrypt -o /dev/null crypttest.c >/dev/null 2>&1 && echo "y"; rm crypttest.c)
 ifeq ($(CRYPT_AVAILABLE),y)
-LDLIBS += m rt crypt
+LDLIBS += m crypt
 else
-LDLIBS += m rt
+LDLIBS += m
 endif
 # libm may be needed for dc, awk, ntpd
 # librt may be needed for clock_gettime()
@@ -177,9 +177,9 @@ CPPFLAGS += $(SELINUX_CFLAGS)
 LDLIBS += $(if $(SELINUX_LIBS),$(SELINUX_LIBS:-l%=%),$(SELINUX_PC_MODULES:lib%=%))
 endif
 
-ifeq ($(CONFIG_FEATURE_NSLOOKUP_BIG),y)
-LDLIBS += resolv
-endif
+#ifeq ($(CONFIG_FEATURE_NSLOOKUP_BIG),y)
+#LDLIBS += resolv
+#endif
 
 ifeq ($(CONFIG_EFENCE),y)
 LDLIBS += efence
