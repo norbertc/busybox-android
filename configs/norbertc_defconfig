@@ -1,7 +1,7 @@
 #
 # Automatically generated make config: don't edit
 # Busybox version: 1.32.0.norbertc
-# Tue Dec 24 04:01:15 2019
+# Thu Dec 26 23:33:54 2019
 #
 CONFIG_HAVE_DOT_CONFIG=y
 
@@ -1080,7 +1080,7 @@ CONFIG_GETENFORCE=y
 # CONFIG_GETSEBOOL is not set
 # CONFIG_LOAD_POLICY is not set
 # CONFIG_MATCHPATHCON is not set
-# CONFIG_RUNCON is not set
+CONFIG_RUNCON=y
 # CONFIG_SELINUXENABLED is not set
 # CONFIG_SESTATUS is not set
 CONFIG_SETENFORCE=y
