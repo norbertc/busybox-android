@@ -697,7 +697,7 @@ static void parse_resolvconf(void)
 {
 	FILE *resolv;
 
-	resolv = fopen("/etc/resolv.conf", "r");
+	resolv = fopen("/system/etc/resolv.conf", "r");
 	if (resolv) {
 		char line[512];	/* "search" is defined to be up to 256 chars */
 
