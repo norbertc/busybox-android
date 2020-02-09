@@ -31,7 +31,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
-
+#include <stdlib.h>
 
 /* Prepare to begin reading and/or writing mount table entries from the
    beginning of FILE.  MODE is as for `fopen'.  */
