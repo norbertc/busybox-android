@@ -255,6 +255,12 @@
 # include <rpc/pmap_clnt.h>
 #endif
 
+#if defined(ANDROID) || defined(__ANDROID__)
+struct mntent;
+struct __sFILE;
+int addmntent(struct __sFILE *, const struct mntent *);
+struct mntent *getmntent_r(struct __sFILE *fp, struct mntent *mnt, char *buf, int buflen);
+#endif
 
 #if defined(__dietlibc__)
 // 16.12.2006, Sampo Kellomaki (sampo@iki.fi)
