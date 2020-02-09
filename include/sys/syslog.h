@@ -56,8 +56,6 @@
 #define	LOG_INFO	6	/* informational */
 #define	LOG_DEBUG	7	/* debug-level messages */
 
-#define	LOG_MAKEPRI(fac, pri)	(((fac) << 3) | (pri))
-
 #ifdef SYSLOG_NAMES
 #define	INTERNAL_NOPRI	0x10	/* the "no priority" priority */
 				/* mark "facility" */
