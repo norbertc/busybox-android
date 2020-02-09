@@ -21,11 +21,12 @@ CFLAGS += $(call cc-option,-Wall,)
 CFLAGS += $(call cc-option,-Wshadow,)
 CFLAGS += $(call cc-option,-Wwrite-strings,)
 CFLAGS += $(call cc-option,-Wundef,)
-CFLAGS += $(call cc-option,-Wstrict-prototypes,)
+CFLAGS += $(call cc-option,-Wno-strict-prototypes,)
 CFLAGS += $(call cc-option,-Wno-unused -Wno-unused-parameter,)
 CFLAGS += $(call cc-option,-Wno-unused-function -Wno-unused-value,)
 CFLAGS += $(call cc-option,-Wno-missing-prototypes -Wno-missing-declarations,)
 CFLAGS += $(call cc-option,-Wno-format-security,)
+CFLAGS += $(call cc-option,-Wno-incompatible-pointer-types-discards-qualifiers,)
 # warn about C99 declaration after statement
 CFLAGS += $(call cc-option,-Wdeclaration-after-statement,)
 # If you want to add more -Wsomething above, make sure that it is
