@@ -484,19 +484,19 @@ static int parse_reply(const unsigned char *msg, size_t len)
 			printf("\tmail addr = %s\n", dname);
 			cp += n;
 
-			printf("\tserial = %lu\n", ns_get32(cp));
+			printf("\tserial = %lu\n", (unsigned long)ns_get32(cp));
 			cp += 4;
 
-			printf("\trefresh = %lu\n", ns_get32(cp));
+			printf("\trefresh = %lu\n", (unsigned long)ns_get32(cp));
 			cp += 4;
 
-			printf("\tretry = %lu\n", ns_get32(cp));
+			printf("\tretry = %lu\n", (unsigned long)ns_get32(cp));
 			cp += 4;
 
-			printf("\texpire = %lu\n", ns_get32(cp));
+			printf("\texpire = %lu\n", (unsigned long)ns_get32(cp));
 			cp += 4;
 
-			printf("\tminimum = %lu\n", ns_get32(cp));
+			printf("\tminimum = %lu\n", (unsigned long)ns_get32(cp));
 			break;
 
 		default:
