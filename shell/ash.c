@@ -1740,6 +1740,15 @@ growstackstr(void)
 	return (char *)stackblock() + len;
 }
 
+static char *
+growstackto(size_t len)
+{
+	while (stackblocksize() < len)
+		growstackblock();
+
+	return stackblock();
+}
+
 /*
  * Called from CHECKSTRSPACE.
  */
@@ -1747,18 +1756,8 @@ static char *
 makestrspace(size_t newlen, char *p)
 {
 	size_t len = p - g_stacknxt;
-	size_t size;
 
-	for (;;) {
-		size_t nleft;
-
-		size = stackblocksize();
-		nleft = size - len;
-		if (nleft >= newlen)
-			break;
-		growstackblock();
-	}
-	return (char *)stackblock() + len;
+	return growstackto(len + newlen) + len;
 }
 
 static char *
@@ -2558,51 +2557,102 @@ listvars(int on, int off, struct strlist *lp, char ***end)
 }
 
 
-/* ============ Path search helper
- *
+/* ============ Path search helper */
+static const char *
+legal_pathopt(const char *opt, const char *term, int magic)
+{
+	switch (magic) {
+	case 0:
+		opt = NULL;
+		break;
+
+	case 1:
+		opt = prefix(opt, "builtin") ?: prefix(opt, "func");
+		break;
+
+	default:
+		opt += strcspn(opt, term);
+		break;
+	}
+
+	if (opt && *opt == '%')
+		opt++;
+
+	return opt;
+}
+
+/*
  * The variable path (passed by reference) should be set to the start
- * of the path before the first call; path_advance will update
- * this value as it proceeds.  Successive calls to path_advance will return
+ * of the path before the first call; padvance will update
+ * this value as it proceeds.  Successive calls to padvance will return
  * the possible path expansions in sequence.  If an option (indicated by
  * a percent sign) appears in the path entry then the global variable
  * pathopt will be set to point to it; otherwise pathopt will be set to
  * NULL.
+ *
+ * If magic is 0 then pathopt recognition will be disabled.  If magic is
+ * 1 we shall recognise %builtin/%func.  Otherwise we shall accept any
+ * pathopt.
  */
-static const char *pathopt;     /* set by path_advance */
+static const char *pathopt;     /* set by padvance */
 
-static char *
-path_advance(const char **path, const char *name)
+static int
+padvance_magic(const char **path, const char *name, int magic)
 {
+	const char *term = "%:";
+	const char *lpathopt;
 	const char *p;
 	char *q;
 	const char *start;
+	size_t qlen;
 	size_t len;
 
 	if (*path == NULL)
-		return NULL;
+		return -1;
+
+	lpathopt = NULL;
 	start = *path;
-	for (p = start; *p && *p != ':' && *p != '%'; p++)
-		continue;
-	len = p - start + strlen(name) + 2;     /* "2" is for '/' and '\0' */
-	while (stackblocksize() < len)
-		growstackblock();
-	q = stackblock();
-	if (p != start) {
-		q = mempcpy(q, start, p - start);
+
+	if (*start == '%' && (p = legal_pathopt(start + 1, term, magic))) {
+		lpathopt = start + 1;
+		start = p;
+		term = ":";
+	}
+
+	len = strcspn(start, term);
+	p = start + len;
+
+	if (*p == '%') {
+		size_t extra = strchrnul(p, ':') - p;
+
+		if (legal_pathopt(p + 1, term, magic))
+			lpathopt = p + 1;
+		else
+			len += extra;
+
+		p += extra;
+	}
+
+	pathopt = lpathopt;
+	*path = *p == ':' ? p + 1 : NULL;
+
+	/* "2" is for '/' and '\0' */
+	qlen = len + strlen(name) + 2;
+	q = growstackto(qlen);
+
+	if (len) {
+		q = mempcpy(q, start, len);
 		*q++ = '/';
 	}
 	strcpy(q, name);
-	pathopt = NULL;
-	if (*p == '%') {
-		pathopt = ++p;
-		while (*p && *p != ':')
-			p++;
-	}
-	if (*p == ':')
-		*path = p + 1;
-	else
-		*path = NULL;
-	return stalloc(len);
+
+	return qlen;
+}
+
+static int
+padvance(const char **path, const char *name)
+{
+	return padvance_magic(path, name, 1);
 }
 
 
@@ -2843,6 +2893,7 @@ cdcmd(int argc UNUSED_PARAM, char **argv UNUSED_PARAM)
 	char c;
 	struct stat statb;
 	int flags;
+	int len;
 
 	flags = cdopt();
 	dest = *argptr;
@@ -2872,9 +2923,10 @@ cdcmd(int argc UNUSED_PARAM, char **argv UNUSED_PARAM)
 	if (!*dest)
 		dest = ".";
 	path = bltinlookup("CDPATH");
-	while (path) {
-		c = *path;
-		p = path_advance(&path, dest);
+	while (p = path, (len = padvance(&path, dest)) >= 0) {
+		c = *p;
+		p = stalloc(len);
+
 		if (stat(p, &statb) >= 0 && S_ISDIR(statb.st_mode)) {
 			if (c && c != ':')
 				flags |= CD_PRINT;
@@ -3758,8 +3810,6 @@ static struct job *jobtab; //5
 static unsigned njobs; //4
 /* current job */
 static struct job *curjob; //lots
-/* number of presumed living untracked jobs */
-static int jobless; //4
 
 #if 0
 /* Bash has a feature: it restores termios after a successful wait for
@@ -4257,8 +4307,19 @@ wait_block_or_sig(int *status)
 #if 1
 		sigfillset(&mask);
 		sigprocmask2(SIG_SETMASK, &mask); /* mask is updated */
-		while (!got_sigchld && !pending_sig)
+		while (!got_sigchld && !pending_sig) {
 			sigsuspend(&mask);
+			/* ^^^ add "sigdelset(&mask, SIGCHLD);" before sigsuspend
+			 * to make sure SIGCHLD is not masked off?
+			 * It was reported that this:
+			 *	fn() { : | return; }
+			 *	shopt -s lastpipe
+			 *	fn
+			 *	exec ash SCRIPT
+			 * under bash 4.4.23 runs SCRIPT with SIGCHLD masked,
+			 * making "wait" commands in SCRIPT block forever.
+			 */
+		}
 		sigprocmask(SIG_SETMASK, &mask, NULL);
 #else /* unsafe: a signal can set pending_sig after check, but before pause() */
 		while (!got_sigchld && !pending_sig)
@@ -4279,7 +4340,7 @@ wait_block_or_sig(int *status)
 #endif
 
 static int
-dowait(int block, struct job *job)
+waitone(int block, struct job *job)
 {
 	int pid;
 	int status;
@@ -4380,10 +4441,6 @@ dowait(int block, struct job *job)
 		goto out;
 	}
 	/* The process wasn't found in job list */
-#if JOBS
-	if (!WIFSTOPPED(status))
-		jobless--;
-#endif
  out:
 	INT_ON;
 
@@ -4405,6 +4462,20 @@ dowait(int block, struct job *job)
 			out2str(s);
 		}
 	}
+	return pid;
+}
+
+static int
+dowait(int block, struct job *jp)
+{
+	int pid = block == DOWAIT_NONBLOCK ? got_sigchld : 1;
+
+	while (jp ? jp->state == JOBRUNNING : pid > 0) {
+		if (!jp)
+			got_sigchld = 0;
+		pid = waitone(block, jp);
+	}
+
 	return pid;
 }
 
@@ -4496,8 +4567,7 @@ showjobs(int mode)
 	TRACE(("showjobs(0x%x) called\n", mode));
 
 	/* Handle all finished jobs */
-	while (dowait(DOWAIT_NONBLOCK, NULL) > 0)
-		continue;
+	dowait(DOWAIT_NONBLOCK, NULL);
 
 	for (jp = curjob; jp; jp = jp->prev_job) {
 		if (!(mode & SHOW_CHANGED) || jp->changed) {
@@ -4614,10 +4684,10 @@ waitcmd(int argc UNUSED_PARAM, char **argv)
 #else
 			dowait(DOWAIT_BLOCK_OR_SIG, NULL);
 #endif
-	/* if child sends us a signal *and immediately exits*,
-	 * dowait() returns pid > 0. Check this case,
-	 * not "if (dowait() < 0)"!
-	 */
+			/* if child sends us a signal *and immediately exits*,
+			 * dowait() returns pid > 0. Check this case,
+			 * not "if (dowait() < 0)"!
+			 */
 			if (pending_sig)
 				goto sigout;
 #if BASH_WAIT_N
@@ -4653,11 +4723,9 @@ waitcmd(int argc UNUSED_PARAM, char **argv)
 			job = getjob(*argv, 0);
 		}
 		/* loop until process terminated or stopped */
-		while (job->state == JOBRUNNING) {
-			dowait(DOWAIT_BLOCK_OR_SIG, NULL);
-			if (pending_sig)
-				goto sigout;
-		}
+		dowait(DOWAIT_BLOCK_OR_SIG, NULL);
+		if (pending_sig)
+			goto sigout;
 		job->waited = 1;
 		retval = getstatus(job);
  repeat: ;
@@ -5209,7 +5277,6 @@ forkchild(struct job *jp, union node *n, int mode)
 #endif
 	for (jp = curjob; jp; jp = jp->prev_job)
 		freejob(jp);
-	jobless = 0;
 }
 
 /* Called after fork(), in parent */
@@ -5220,13 +5287,8 @@ static void
 forkparent(struct job *jp, union node *n, int mode, pid_t pid)
 {
 	TRACE(("In parent shell: child = %d\n", pid));
-	if (!jp) {
-		/* jp is NULL when called by openhere() for heredoc support */
-		while (jobless && dowait(DOWAIT_NONBLOCK, NULL) > 0)
-			continue;
-		jobless++;
+	if (!jp) /* jp is NULL when called by openhere() for heredoc support */
 		return;
-	}
 #if JOBS
 	if (mode != FORK_NOJOB && jp->jobctl) {
 		int pgrp;
@@ -5303,43 +5365,41 @@ waitforjob(struct job *jp)
 {
 	int st;
 
-	TRACE(("waitforjob(%%%d) called\n", jobno(jp)));
+	TRACE(("waitforjob(%%%d) called\n", jp ? jobno(jp) : 0));
 
-	INT_OFF;
-	while (jp->state == JOBRUNNING) {
-		/* In non-interactive shells, we _can_ get
-		 * a keyboard signal here and be EINTRed,
-		 * but we just loop back, waiting for command to complete.
-		 *
-		 * man bash:
-		 * "If bash is waiting for a command to complete and receives
-		 * a signal for which a trap has been set, the trap
-		 * will not be executed until the command completes."
-		 *
-		 * Reality is that even if trap is not set, bash
-		 * will not act on the signal until command completes.
-		 * Try this. sleep5intoff.c:
-		 * #include <signal.h>
-		 * #include <unistd.h>
-		 * int main() {
-		 *         sigset_t set;
-		 *         sigemptyset(&set);
-		 *         sigaddset(&set, SIGINT);
-		 *         sigaddset(&set, SIGQUIT);
-		 *         sigprocmask(SIG_BLOCK, &set, NULL);
-		 *         sleep(5);
-		 *         return 0;
-		 * }
-		 * $ bash -c './sleep5intoff; echo hi'
-		 * ^C^C^C^C <--- pressing ^C once a second
-		 * $ _
-		 * $ bash -c './sleep5intoff; echo hi'
-		 * ^\^\^\^\hi <--- pressing ^\ (SIGQUIT)
-		 * $ _
-		 */
-		dowait(DOWAIT_BLOCK, jp);
-	}
-	INT_ON;
+	/* In non-interactive shells, we _can_ get
+	 * a keyboard signal here and be EINTRed, but we just loop
+	 * inside dowait(), waiting for command to complete.
+	 *
+	 * man bash:
+	 * "If bash is waiting for a command to complete and receives
+	 * a signal for which a trap has been set, the trap
+	 * will not be executed until the command completes."
+	 *
+	 * Reality is that even if trap is not set, bash
+	 * will not act on the signal until command completes.
+	 * Try this. sleep5intoff.c:
+	 * #include <signal.h>
+	 * #include <unistd.h>
+	 * int main() {
+	 *         sigset_t set;
+	 *         sigemptyset(&set);
+	 *         sigaddset(&set, SIGINT);
+	 *         sigaddset(&set, SIGQUIT);
+	 *         sigprocmask(SIG_BLOCK, &set, NULL);
+	 *         sleep(5);
+	 *         return 0;
+	 * }
+	 * $ bash -c './sleep5intoff; echo hi'
+	 * ^C^C^C^C <--- pressing ^C once a second
+	 * $ _
+	 * $ bash -c './sleep5intoff; echo hi'
+	 * ^\^\^\^\hi <--- pressing ^\ (SIGQUIT)
+	 * $ _
+	 */
+	dowait(jp ? DOWAIT_BLOCK : DOWAIT_NONBLOCK, jp);
+	if (!jp)
+		return exitstatus;
 
 	st = getstatus(jp);
 #if JOBS
@@ -6578,7 +6638,7 @@ expbackq(union node *cmd, int flag)
 
 	/* Eat all trailing newlines */
 	dest = expdest;
-	for (; dest > (char *)stackblock() && dest[-1] == '\n';)
+	for (; dest > ((char *)stackblock() + startloc) && dest[-1] == '\n';)
 		STUNPUTC(dest);
 	expdest = dest;
 
@@ -8172,13 +8232,13 @@ static void shellexec(char *prog, char **argv, const char *path, int idx)
 	} else {
  try_PATH:
 		e = ENOENT;
-		while ((cmdname = path_advance(&path, prog)) != NULL) {
+		while (padvance(&path, argv[0]) >= 0) {
+			cmdname = stackblock();
 			if (--idx < 0 && pathopt == NULL) {
 				tryexec(IF_FEATURE_SH_STANDALONE(-1,) cmdname, argv, envp);
 				if (errno != ENOENT && errno != ENOTDIR)
 					e = errno;
 			}
-			stunalloc(cmdname);
 		}
 	}
 
@@ -8211,18 +8271,17 @@ printentry(struct tblentry *cmdp)
 	idx = cmdp->param.index;
 	path = pathval();
 	do {
-		name = path_advance(&path, cmdp->cmdname);
-		stunalloc(name);
+		padvance(&path, cmdp->cmdname);
 	} while (--idx >= 0);
+	name = stackblock();
 	out1fmt("%s%s\n", name, (cmdp->rehash ? "*" : nullstr));
 }
 
 /*
- * Clear out command entries.  The argument specifies the first entry in
- * PATH which has changed.
+ * Clear out command entries.
  */
 static void
-clearcmdentry(int firstchange)
+clearcmdentry(void)
 {
 	struct tblentry **tblp;
 	struct tblentry **pp;
@@ -8232,10 +8291,11 @@ clearcmdentry(int firstchange)
 	for (tblp = cmdtable; tblp < &cmdtable[CMDTABLESIZE]; tblp++) {
 		pp = tblp;
 		while ((cmdp = *pp) != NULL) {
-			if ((cmdp->cmdtype == CMDNORMAL &&
-			     cmdp->param.index >= firstchange)
-			 || (cmdp->cmdtype == CMDBUILTIN &&
-			     builtinloc >= firstchange)
+			if (cmdp->cmdtype == CMDNORMAL
+			 || (cmdp->cmdtype == CMDBUILTIN
+			    && !IS_BUILTIN_REGULAR(cmdp->param.cmd)
+			    && builtinloc > 0
+			    )
 			) {
 				*pp = cmdp->next;
 				free(cmdp);
@@ -8335,7 +8395,7 @@ hashcmd(int argc UNUSED_PARAM, char **argv UNUSED_PARAM)
 	char *name;
 
 	if (nextopt("r") != '\0') {
-		clearcmdentry(0);
+		clearcmdentry();
 		return 0;
 	}
 
@@ -8354,7 +8414,11 @@ hashcmd(int argc UNUSED_PARAM, char **argv UNUSED_PARAM)
 		cmdp = cmdlookup(name, 0);
 		if (cmdp != NULL
 		 && (cmdp->cmdtype == CMDNORMAL
-		     || (cmdp->cmdtype == CMDBUILTIN && builtinloc >= 0))
+		    || (cmdp->cmdtype == CMDBUILTIN
+			&& !IS_BUILTIN_REGULAR(cmdp->param.cmd)
+			&& builtinloc > 0
+			)
+		    )
 		) {
 			delete_cmd_entry();
 		}
@@ -8396,42 +8460,28 @@ hashcd(void)
  * Called with interrupts off.
  */
 static void FAST_FUNC
-changepath(const char *new)
+changepath(const char *newval)
 {
-	const char *old;
-	int firstchange;
+	const char *new;
 	int idx;
-	int idx_bltin;
+	int bltin;
 
-	old = pathval();
-	firstchange = 9999;     /* assume no change */
+	new = newval;
 	idx = 0;
-	idx_bltin = -1;
+	bltin = -1;
 	for (;;) {
-		if (*old != *new) {
-			firstchange = idx;
-			if ((*old == '\0' && *new == ':')
-			 || (*old == ':' && *new == '\0')
-			) {
-				firstchange++;
-			}
-			old = new;      /* ignore subsequent differences */
-		}
-		if (*new == '\0')
+		if (*new == '%' && prefix(new + 1, "builtin")) {
+			bltin = idx;
 			break;
-		if (*new == '%' && idx_bltin < 0 && prefix(new + 1, "builtin"))
-			idx_bltin = idx;
-		if (*new == ':')
-			idx++;
+		}
+		new = strchr(new, ':');
+		if (!new)
+			break;
+		idx++;
 		new++;
-		old++;
 	}
-	if (builtinloc < 0 && idx_bltin >= 0)
-		builtinloc = idx_bltin;             /* zap builtins */
-	if (builtinloc >= 0 && idx_bltin < 0)
-		firstchange = 0;
-	clearcmdentry(firstchange);
-	builtinloc = idx_bltin;
+	builtinloc = bltin;
+	clearcmdentry();
 }
 enum {
 	TEOF,
@@ -8606,9 +8656,9 @@ describe_command(char *command, const char *path, int describe_command_verbose)
 			p = command;
 		} else {
 			do {
-				p = path_advance(&path, command);
-				stunalloc(p);
+				padvance(&path, command);
 			} while (--j >= 0);
+			p = stackblock();
 		}
 		if (describe_command_verbose) {
 			out1fmt(" is %s", p);
@@ -10269,6 +10319,8 @@ evalcommand(union node *cmd, int flags)
 		goto out;
 	}
 
+	jp = NULL;
+
 	/* Execute the command. */
 	switch (cmdentry.cmdtype) {
 	default: {
@@ -10323,8 +10375,6 @@ evalcommand(union node *cmd, int flags)
 			jp = makejob(/*cmd,*/ 1);
 			if (forkshell(jp, cmd, FORK_FG) != 0) {
 				/* parent */
-				status = waitforjob(jp);
-				INT_ON;
 				TRACE(("forked child exited with %d\n", status));
 				break;
 			}
@@ -10342,32 +10392,22 @@ evalcommand(union node *cmd, int flags)
 			if (cmd_is_exec && argc > 1)
 				listsetvar(varlist.list, VEXPORT);
 		}
-
-		/* Tight loop with builtins only:
-		 * "while kill -0 $child; do true; done"
-		 * will never exit even if $child died, unless we do this
-		 * to reap the zombie and make kill detect that it's gone: */
-		dowait(DOWAIT_NONBLOCK, NULL);
-
-		if (evalbltin(cmdentry.u.cmd, argc, argv, flags)) {
-			if (exception_type == EXERROR && spclbltin <= 0) {
-				FORCE_INT_ON;
-				goto readstatus;
-			}
+		if (evalbltin(cmdentry.u.cmd, argc, argv, flags)
+		 && !(exception_type == EXERROR && spclbltin <= 0)
+		) {
  raise:
 			longjmp(exception_handler->loc, 1);
 		}
-		goto readstatus;
+		break;
 
 	case CMDFUNCTION:
-		/* See above for the rationale */
-		dowait(DOWAIT_NONBLOCK, NULL);
 		if (evalfun(cmdentry.u.func, argc, argv, flags))
 			goto raise;
- readstatus:
-		status = exitstatus;
 		break;
 	} /* switch */
+
+	status = waitforjob(jp);
+	FORCE_INT_ON;
 
  out:
 	if (cmd->ncmd.redirect)
@@ -11023,8 +11063,12 @@ chkmail(void)
 	mpath = mpathset() ? mpathval() : mailval();
 	new_hash = 0;
 	for (;;) {
-		p = path_advance(&mpath, nullstr);
-		if (p == NULL)
+		int len;
+
+		len = padvance_magic(&mpath, nullstr, 2);
+		if (!len)
+			break;
+		p = stackblock();
 			break;
 		if (*p == '\0')
 			continue;
@@ -12602,7 +12646,7 @@ parsesub: {
 			do {
 				STPUTC(c, out);
 				c = pgetc_eatbnl();
-			} while (isdigit(c));
+			} while (!subtype && isdigit(c));
 		} else if (c != '}') {
 			/* $[{[#]]<specialchar>[}] */
 			int cc = c;
@@ -12733,6 +12777,7 @@ parsebackq: {
 	union node *n;
 	char *str;
 	size_t savelen;
+	struct heredoc *saveheredoclist;
 	smallint saveprompt = 0;
 
 	str = NULL;
@@ -12808,6 +12853,9 @@ parsebackq: {
 	*nlpp = stzalloc(sizeof(**nlpp));
 	/* (*nlpp)->next = NULL; - stzalloc did it */
 
+	saveheredoclist = heredoclist;
+	heredoclist = NULL;
+
 	if (oldstyle) {
 		saveprompt = doprompt;
 		doprompt = 0;
@@ -12817,21 +12865,22 @@ parsebackq: {
 
 	if (oldstyle)
 		doprompt = saveprompt;
-	else if (readtoken() != TRP)
-		raise_error_unexpected_syntax(TRP);
+	else {
+		if (readtoken() != TRP)
+			raise_error_unexpected_syntax(TRP);
+		setinputstring(nullstr);
+		parseheredoc();
+	}
+
+	heredoclist = saveheredoclist;
 
 	(*nlpp)->n = n;
-	if (oldstyle) {
-		/*
-		 * Start reading from old file again, ignoring any pushed back
-		 * tokens left from the backquote parsing
-		 */
-		popfile();
+	/* Start reading from old file again. */
+	popfile();
+	/* Ignore any pushed back tokens left from the backquote parsing. */
+	if (oldstyle)
 		tokpushback = 0;
-	}
-	while (stackblocksize() <= savelen)
-		growstackblock();
-	STARTSTACKSTR(out);
+	out = growstackto(savelen + 1);
 	if (str) {
 		memcpy(out, str, savelen);
 		STADJUST(savelen, out);
@@ -13339,33 +13388,32 @@ cmdloop(int top)
  * search for the file, which is necessary to find sub-commands.
  */
 static char *
-find_dot_file(char *name)
+find_dot_file(char *basename)
 {
 	char *fullname;
 	const char *path = pathval();
 	struct stat statb;
+	int len;
 
 	/* don't try this for absolute or relative paths */
-	if (strchr(name, '/'))
-		return name;
+	if (strchr(basename, '/'))
+		return basename;
 
-	while ((fullname = path_advance(&path, name)) != NULL) {
-		if ((stat(fullname, &statb) == 0) && S_ISREG(statb.st_mode)) {
-			/*
-			 * Don't bother freeing here, since it will
-			 * be freed by the caller.
-			 */
-			return fullname;
+	while ((len = padvance(&path, basename)) >= 0) {
+		fullname = stackblock();
+		if ((!pathopt || *pathopt == 'f')
+		 && !stat(fullname, &statb) && S_ISREG(statb.st_mode)
+		) {
+			/* This will be freed by the caller. */
+			return stalloc(len);
 		}
-		if (fullname != name)
-			stunalloc(fullname);
 	}
 	/* not found in PATH */
 
 #if ENABLE_ASH_BASH_SOURCE_CURDIR
-	return name;
+	return basename;
 #else
-	ash_msg_and_raise_error("%s: not found", name);
+	ash_msg_and_raise_error("%s: not found", basename);
 	/* NOTREACHED */
 #endif
 }
@@ -13468,6 +13516,7 @@ find_command(char *name, struct cmdentry *entry, int act, const char *path)
 	int e;
 	int updatetbl;
 	struct builtincmd *bcmd;
+	int len;
 
 	/* If name contains a slash, don't use PATH or hash table */
 	if (strchr(name, '/') != NULL) {
@@ -13512,7 +13561,7 @@ find_command(char *name, struct cmdentry *entry, int act, const char *path)
 			bit = DO_NOFUNC;
 			break;
 		case CMDBUILTIN:
-			bit = DO_ALTBLTIN;
+			bit = IS_BUILTIN_REGULAR(cmdp->param.cmd) ? 0 : DO_ALTBLTIN;
 			break;
 		}
 		if (act & bit) {
@@ -13559,20 +13608,20 @@ find_command(char *name, struct cmdentry *entry, int act, const char *path)
 	e = ENOENT;
 	idx = -1;
  loop:
-	while ((fullname = path_advance(&path, name)) != NULL) {
-		stunalloc(fullname);
-		/* NB: code below will still use fullname
-		 * despite it being "unallocated" */
+	while ((len = padvance(&path, name)) >= 0) {
+		const char *lpathopt = pathopt;
+
+		fullname = stackblock();
 		idx++;
-		if (pathopt) {
-			if (prefix(pathopt, "builtin")) {
+		if (lpathopt) {
+			if (*lpathopt == 'b') {
 				if (bcmd)
 					goto builtin_success;
 				continue;
-			}
-			if ((act & DO_NOFUNC)
-			 || !prefix(pathopt, "func")
-			) {     /* ignore unimplemented options */
+			} else if (!(act & DO_NOFUNC)) {
+				/* handled below */
+			} else {
+				/* ignore unimplemented options */
 				continue;
 			}
 		}
@@ -13595,8 +13644,8 @@ find_command(char *name, struct cmdentry *entry, int act, const char *path)
 		e = EACCES;     /* if we fail, this will be the error */
 		if (!S_ISREG(statb.st_mode))
 			continue;
-		if (pathopt) {          /* this is a %func directory */
-			stalloc(strlen(fullname) + 1);
+		if (lpathopt) {          /* this is a %func directory */
+			stalloc(len);
 			/* NB: stalloc will return space pointed by fullname
 			 * (because we don't have any intervening allocations
 			 * between stunalloc above and this stalloc) */
@@ -14132,11 +14181,6 @@ init(void)
 	sigmode[SIGCHLD - 1] = S_DFL; /* ensure we install handler even if it is SIG_IGNed */
 	setsignal(SIGCHLD);
 
-	/* bash re-enables SIGHUP which is SIG_IGNed on entry.
-	 * Try: "trap '' HUP; bash; echo RET" and type "kill -HUP $$"
-	 */
-	signal(SIGHUP, SIG_DFL);
-
 	{
 		char **envp;
 		const char *p;
@@ -14284,11 +14328,11 @@ read_profile(const char *name)
 
 /*
  * This routine is called when an error or an interrupt occurs in an
- * interactive shell and control is returned to the main command loop.
- * (In dash, this function is auto-generated by build machinery).
+ * interactive shell and control is returned to the main command loop
+ * but prior to exitshell.
  */
 static void
-reset(void)
+exitreset(void)
 {
 	/* from eval.c: */
 	evalskip = 0;
@@ -14301,13 +14345,22 @@ reset(void)
 	/* from expand.c: */
 	ifsfree();
 
+	/* from redir.c: */
+	unwindredir(NULL);
+}
+
+/*
+ * This routine is called when an error or an interrupt occurs in an
+ * interactive shell and control is returned to the main command loop.
+ * (In dash, this function is auto-generated by build machinery).
+ */
+static void
+reset(void)
+{
 	/* from input.c: */
 	g_parsefile->left_in_buffer = 0;
 	g_parsefile->left_in_line = 0;      /* clear input buffer */
 	popallfiles();
-
-	/* from redir.c: */
-	unwindredir(NULL);
 
 	/* from var.c: */
 	unwindlocalvars(NULL);
@@ -14356,13 +14409,16 @@ int ash_main(int argc UNUSED_PARAM, char **argv)
 		smallint e;
 		smallint s;
 
-		reset();
+		exitreset();
 
 		e = exception_type;
 		s = state;
 		if (e == EXEXIT || s == 0 || iflag == 0 || shlvl) {
 			exitshell();
 		}
+
+		reset();
+
 		if (e == EXINT) {
 			newline_and_flush(stderr);
 		}
@@ -14466,6 +14522,14 @@ int ash_main(int argc UNUSED_PARAM, char **argv)
 		}
 #endif
  state4: /* XXX ??? - why isn't this before the "if" statement */
+
+		/* Interactive bash re-enables SIGHUP which is SIG_IGNed on entry.
+		 * Try:
+		 * trap '' hup; bash; echo RET	# type "kill -hup $$", see SIGHUP having effect
+		 * trap '' hup; bash -c 'kill -hup $$; echo ALIVE'  # here SIGHUP is SIG_IGNed
+		 */
+		signal(SIGHUP, SIG_DFL);
+
 		cmdloop(1);
 	}
 #if PROFILE
