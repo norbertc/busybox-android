@@ -2477,24 +2477,6 @@ unsetvar(const char *s)
 }
 
 /*
- * Process a linked list of variable assignments.
- */
-static void
-listsetvar(struct strlist *list_set_var, int flags)
-{
-	struct strlist *lp = list_set_var;
-
-	if (!lp)
-		return;
-	INT_OFF;
-	do {
-		setvareq(lp->text, flags);
-		lp = lp->next;
-	} while (lp);
-	INT_ON;
-}
-
-/*
  * Generate a list of variables satisfying the given conditions.
  */
 #if !ENABLE_FEATURE_SH_NOFORK
@@ -6048,6 +6030,8 @@ static int substr_atoi(const char *s)
 #define EXP_VARTILDE2   0x20    /* expand tildes after colons only */
 #define EXP_WORD        0x40    /* expand word in parameter expansion */
 #define EXP_QUOTED      0x100   /* expand word in double quotes */
+#define EXP_KEEPNUL     0x200   /* do not skip NUL characters */
+
 /*
  * rmescape() flags
  */
@@ -6058,8 +6042,6 @@ static int substr_atoi(const char *s)
 
 /* Add CTLESC when necessary. */
 #define QUOTES_ESC     (EXP_FULL | EXP_CASE)
-/* Do not skip NUL characters. */
-#define QUOTES_KEEPNUL EXP_TILDE
 
 /*
  * Structure specifying which parts of the string should be searched
@@ -6366,27 +6348,28 @@ preglob(const char *pattern, int flag)
  * Put a string on the stack.
  */
 static void
-memtodest(const char *p, size_t len, int syntax, int quotes)
+memtodest(const char *p, size_t len, int flags)
 {
+	int syntax = flags & EXP_QUOTED ? DQSYNTAX : BASESYNTAX;
 	char *q;
 
 	if (!len)
 		return;
 
-	q = makestrspace((quotes & QUOTES_ESC) ? len * 2 : len, expdest);
+	q = makestrspace(len * 2, expdest);
 
 	do {
 		unsigned char c = *p++;
 		if (c) {
-			if (quotes & QUOTES_ESC) {
+			if (flags & QUOTES_ESC) {
 				int n = SIT(c, syntax);
 				if (n == CCTL
-				 || (syntax != BASESYNTAX && n == CBACK)
+				 || ((flags & EXP_QUOTED) && n == CBACK)
 				) {
 					USTPUTC(CTLESC, q);
 				}
 			}
-		} else if (!(quotes & QUOTES_KEEPNUL))
+		} else if (!(flags & EXP_KEEPNUL))
 			continue;
 		USTPUTC(c, q);
 	} while (--len);
@@ -6395,10 +6378,10 @@ memtodest(const char *p, size_t len, int syntax, int quotes)
 }
 
 static size_t
-strtodest(const char *p, int syntax, int quotes)
+strtodest(const char *p, int flags)
 {
 	size_t len = strlen(p);
-	memtodest(p, len, syntax, quotes);
+	memtodest(p, len, flags);
 	return len;
 }
 
@@ -6466,13 +6449,12 @@ removerecordregions(int endoff)
 }
 
 static char *
-exptilde(char *startp, char *p, int flags)
+exptilde(char *startp, char *p, int flag)
 {
 	unsigned char c;
 	char *name;
 	struct passwd *pw;
 	const char *home;
-	int quotes = flags & QUOTES_ESC;
 
 	name = p + 1;
 
@@ -6483,7 +6465,7 @@ exptilde(char *startp, char *p, int flags)
 		case CTLQUOTEMARK:
 			return startp;
 		case ':':
-			if (flags & EXP_VARTILDE)
+			if (flag & EXP_VARTILDE)
 				goto done;
 			break;
 		case '/':
@@ -6504,7 +6486,7 @@ exptilde(char *startp, char *p, int flags)
 	if (!home)
 		goto lose;
 	*p = c;
-	strtodest(home, SQSYNTAX, quotes);
+	strtodest(home, flag | EXP_QUOTED);
 	return p;
  lose:
 	*p = c;
@@ -6604,7 +6586,6 @@ expbackq(union node *cmd, int flag)
 	char *p;
 	char *dest;
 	int startloc;
-	int syntax = flag & EXP_QUOTED ? DQSYNTAX : BASESYNTAX;
 	struct stackmark smark;
 
 	INT_OFF;
@@ -6618,7 +6599,7 @@ expbackq(union node *cmd, int flag)
 	if (i == 0)
 		goto read;
 	for (;;) {
-		memtodest(p, i, syntax, flag & QUOTES_ESC);
+		memtodest(p, i, flag);
  read:
 		if (in.fd < 0)
 			break;
@@ -7327,11 +7308,10 @@ varvalue(char *name, int varflags, int flags, int quoted)
 	int sep;
 	int subtype = varflags & VSTYPE;
 	int discard = subtype == VSPLUS || subtype == VSLENGTH;
-	int quotes = (discard ? 0 : (flags & QUOTES_ESC)) | QUOTES_KEEPNUL;
-	int syntax;
 
+	flags |= EXP_KEEPNUL;
+	flags &= discard ? ~QUOTES_ESC : ~0;
 	sep = (flags & EXP_FULL) << CHAR_BIT;
-	syntax = quoted ? DQSYNTAX : BASESYNTAX;
 
 	switch (*name) {
 	case '$':
@@ -7397,11 +7377,11 @@ varvalue(char *name, int varflags, int flags, int quoted)
 		if (!ap)
 			return -1;
 		while ((p = *ap++) != NULL) {
-			len += strtodest(p, syntax, quotes);
+			len += strtodest(p, flags);
 
 			if (*ap && sep) {
 				len++;
-				memtodest(&sepc, 1, syntax, quotes);
+				memtodest(&sepc, 1, flags);
 			}
 		}
 		break;
@@ -7428,7 +7408,7 @@ varvalue(char *name, int varflags, int flags, int quoted)
 		if (!p)
 			return -1;
 
-		len = strtodest(p, syntax, quotes);
+		len = strtodest(p, flags);
 #if ENABLE_UNICODE_SUPPORT
 		if (subtype == VSLENGTH && len > 0) {
 			reinit_unicode_for_ash();
@@ -8112,7 +8092,7 @@ struct cmdentry {
 #define DO_ABS          0x02    /* checks absolute paths */
 #define DO_NOFUNC       0x04    /* don't return shell functions, for command */
 #define DO_ALTPATH      0x08    /* using alternate path */
-#define DO_ALTBLTIN     0x20    /* %builtin in alt. path */
+#define DO_REGBLTIN     0x10    /* regular built-ins and functions only */
 
 static void find_command(char *, struct cmdentry *, int, const char *);
 
@@ -8718,24 +8698,43 @@ typecmd(int argc UNUSED_PARAM, char **argv)
 }
 
 #if ENABLE_ASH_CMDCMD
-/* Is it "command [-p] PROG ARGS" bltin, no other opts? Return ptr to "PROG" if yes */
-static char **
-parse_command_args(char **argv, const char **path)
+static struct strlist *
+fill_arglist(struct arglist *arglist, union node **argpp)
 {
+	struct strlist **lastp = arglist->lastp;
+	union node *argp;
+
+	while ((argp = *argpp) != NULL) {
+		expandarg(argp, arglist, EXP_FULL | EXP_TILDE);
+		*argpp = argp->narg.next;
+		if (*lastp)
+			break;
+	}
+
+	return *lastp;
+}
+
+/* Is it "command [-p] PROG ARGS" bltin, no other opts? Return ptr to "PROG" if yes */
+static int
+parse_command_args(struct arglist *arglist, union node **argpp, const char **path)
+{
+	struct strlist *sp = arglist->list;
 	char *cp, c;
 
 	for (;;) {
-		cp = *++argv;
-		if (!cp)
-			return NULL;
+		sp = sp->next ? sp->next : fill_arglist(arglist, argpp);
+		if (!sp)
+			return 0;
+		cp = sp->text;
 		if (*cp++ != '-')
 			break;
 		c = *cp++;
 		if (!c)
 			break;
 		if (c == '-' && !*cp) {
-			if (!*++argv)
-				return NULL;
+			if (!sp->next && !fill_arglist(arglist, argpp))
+				return 0;
+			sp = sp->next;
 			break;
 		}
 		do {
@@ -8745,12 +8744,14 @@ parse_command_args(char **argv, const char **path)
 				break;
 			default:
 				/* run 'typecmd' for other options */
-				return NULL;
+				return 0;
 			}
 			c = *cp++;
 		} while (c);
 	}
-	return argv;
+
+	arglist->list = sp;
+	return DO_NOFUNC;
 }
 
 static int FAST_FUNC
@@ -9719,18 +9720,23 @@ poplocalvars(int keep)
  * Create a new localvar environment.
  */
 static struct localvar_list *
-pushlocalvars(void)
+pushlocalvars(int push)
 {
 	struct localvar_list *ll;
+	struct localvar_list *top;
+
+	top = localvar_stack;
+	if (!push)
+		goto out;
 
 	INT_OFF;
 	ll = ckzalloc(sizeof(*ll));
 	/*ll->lv = NULL; - zalloc did it */
-	ll->next = localvar_stack;
+	ll->next = top;
 	localvar_stack = ll;
 	INT_ON;
-
-	return ll->next;
+ out:
+	return top;
 }
 
 static void
@@ -9789,7 +9795,7 @@ evalfun(struct funcnode *func, int argc, char **argv, int flags)
  * (options will be restored on return from the function).
  */
 static void
-mklocal(char *name)
+mklocal(char *name, int flags)
 {
 	struct localvar *lvp;
 	struct var **vpp;
@@ -9826,9 +9832,9 @@ mklocal(char *name)
 		if (vp == NULL) {
 			/* variable did not exist yet */
 			if (eq)
-				vp = setvareq(name, VSTRFIXED);
+				vp = setvareq(name, VSTRFIXED | flags);
 			else
-				vp = setvar(name, NULL, VSTRFIXED);
+				vp = setvar(name, NULL, VSTRFIXED | flags);
 			lvp->flags = VUNSET;
 		} else {
 			lvp->text = vp->var_text;
@@ -9838,7 +9844,7 @@ mklocal(char *name)
 			 */
 			vp->flags |= VSTRFIXED|VTEXTFIXED;
 			if (eq)
-				setvareq(name, 0);
+				setvareq(name, flags);
 			else
 				/* "local VAR" unsets VAR: */
 				setvar0(name, NULL);
@@ -9864,7 +9870,7 @@ localcmd(int argc UNUSED_PARAM, char **argv)
 
 	argv = argptr;
 	while ((name = *argv++) != NULL) {
-		mklocal(name);
+		mklocal(name, 0);
 	}
 	return 0;
 }
@@ -10124,7 +10130,7 @@ static int
 evalcommand(union node *cmd, int flags)
 {
 	static const struct builtincmd null_bltin = {
-		"\0\0", bltincmd /* why three NULs? */
+		BUILTIN_REGULAR "", bltincmd
 	};
 	struct localvar_list *localvar_stop;
 	struct parsefile *file_stop;
@@ -10134,15 +10140,19 @@ evalcommand(union node *cmd, int flags)
 	struct arglist varlist;
 	char **argv;
 	int argc;
+	struct strlist *osp;
 	const struct strlist *sp;
 	struct cmdentry cmdentry;
 	struct job *jp;
 	char *lastarg;
 	const char *path;
 	int spclbltin;
+	int cmd_flag;
 	int status;
 	char **nargv;
 	smallint cmd_is_exec;
+	int vflags;
+	int vlocal;
 
 	errlinno = lineno = cmd->ncmd.linno;
 	if (funcline)
@@ -10150,7 +10160,6 @@ evalcommand(union node *cmd, int flags)
 
 	/* First expand the arguments. */
 	TRACE(("evalcommand(0x%lx, %d) called\n", (long)cmd, flags));
-	localvar_stop = pushlocalvars();
 	file_stop = g_parsefile;
 	back_exitstatus = 0;
 
@@ -10161,27 +10170,57 @@ evalcommand(union node *cmd, int flags)
 	arglist.lastp = &arglist.list;
 	*arglist.lastp = NULL;
 
+	cmd_flag = 0;
+	cmd_is_exec = 0;
+	spclbltin = -1;
+	vflags = 0;
+	vlocal = 0;
+	path = NULL;
+
 	argc = 0;
-	if (cmd->ncmd.args) {
-		struct builtincmd *bcmd;
-		smallint pseudovarflag;
+	argp = cmd->ncmd.args;
+	osp = fill_arglist(&arglist, &argp);
+	if (osp) {
+		int pseudovarflag = 0;
 
-		bcmd = find_builtin(cmd->ncmd.args->narg.text);
-		pseudovarflag = bcmd && IS_BUILTIN_ASSIGN(bcmd);
+		for (;;) {
+			find_command(arglist.list->text, &cmdentry,
+					cmd_flag | DO_REGBLTIN, pathval());
 
-		for (argp = cmd->ncmd.args; argp; argp = argp->narg.next) {
-			struct strlist **spp;
+			vlocal++;
 
-			spp = arglist.lastp;
-			if (pseudovarflag && isassignment(argp->narg.text))
-				expandarg(argp, &arglist, EXP_VARTILDE);
-			else
-				expandarg(argp, &arglist, EXP_FULL | EXP_TILDE);
+			/* implement bltin and command here */
+			if (cmdentry.cmdtype != CMDBUILTIN)
+				break;
 
-			for (sp = *spp; sp; sp = sp->next)
-				argc++;
+			pseudovarflag = IS_BUILTIN_ASSIGN(cmdentry.u.cmd);
+			if (spclbltin < 0) {
+				spclbltin = IS_BUILTIN_SPECIAL(cmdentry.u.cmd);
+				vlocal = !spclbltin;
+			}
+			cmd_is_exec = cmdentry.u.cmd == EXECCMD;
+			if (cmdentry.u.cmd != COMMANDCMD)
+				break;
+
+			cmd_flag = parse_command_args(&arglist, &argp, &path);
+			if (!cmd_flag)
+				break;
 		}
+
+		for (; argp; argp = argp->narg.next)
+			expandarg(argp, &arglist,
+					pseudovarflag &&
+					isassignment(argp->narg.text) ?
+					EXP_VARTILDE : EXP_FULL | EXP_TILDE);
+
+		for (sp = arglist.list; sp; sp = sp->next)
+			argc++;
+
+		if (cmd_is_exec && argc > 1)
+			vflags = VEXPORT;
 	}
+
+	localvar_stop = pushlocalvars(vlocal);
 
 	/* Reserve one extra spot at the front for shellexec. */
 	nargv = stalloc(sizeof(char *) * (argc + 2));
@@ -10210,23 +10249,27 @@ evalcommand(union node *cmd, int flags)
 	}
 	status = redirectsafe(cmd->ncmd.redirect, REDIR_PUSH | REDIR_SAVEFD2);
 
-	path = vpath.var_text;
+	if (status) {
+ bail:
+		exitstatus = status;
+
+		/* We have a redirection error. */
+		if (spclbltin > 0)
+			raise_exception(EXERROR);
+
+		goto out;
+	}
+
 	for (argp = cmd->ncmd.assign; argp; argp = argp->narg.next) {
 		struct strlist **spp;
-		char *p;
 
 		spp = varlist.lastp;
 		expandarg(argp, &varlist, EXP_VARTILDE);
 
-		mklocal((*spp)->text);
-
-		/*
-		 * Modify the command lookup path, if a PATH= assignment
-		 * is present
-		 */
-		p = (*spp)->text;
-		if (varcmp(p, path) == 0)
-			path = p;
+		if (vlocal)
+			mklocal((*spp)->text, VEXPORT);
+		else
+			setvareq((*spp)->text, vflags);
 	}
 
 	/* Print the command if xflag is set. */
@@ -10265,64 +10308,23 @@ evalcommand(union node *cmd, int flags)
 		safe_write(preverrout_fd, "\n", 1);
 	}
 
-	cmd_is_exec = 0;
-	spclbltin = -1;
-
 	/* Now locate the command. */
-	if (argc) {
-		int cmd_flag = DO_ERR;
-#if ENABLE_ASH_CMDCMD
-		const char *oldpath = path + 5;
-#endif
-		path += 5;
-		for (;;) {
-			find_command(argv[0], &cmdentry, cmd_flag, path);
-			if (cmdentry.cmdtype == CMDUNKNOWN) {
-				flush_stdout_stderr();
-				status = 127;
-				goto bail;
-			}
-
-			/* implement bltin and command here */
-			if (cmdentry.cmdtype != CMDBUILTIN)
-				break;
-			if (spclbltin < 0)
-				spclbltin = IS_BUILTIN_SPECIAL(cmdentry.u.cmd);
-			if (cmdentry.u.cmd == EXECCMD)
-				cmd_is_exec = 1;
-#if ENABLE_ASH_CMDCMD
-			if (cmdentry.u.cmd == COMMANDCMD) {
-				path = oldpath;
-				nargv = parse_command_args(argv, &path);
-				if (!nargv)
-					break;
-				/* It's "command [-p] PROG ARGS" (that is, no -Vv).
-				 * nargv => "PROG". path is updated if -p.
-				 */
-				argc -= nargv - argv;
-				argv = nargv;
-				cmd_flag |= DO_NOFUNC;
-			} else
-#endif
-				break;
-		}
-	}
-
-	if (status) {
- bail:
-		exitstatus = status;
-
-		/* We have a redirection error. */
-		if (spclbltin > 0)
-			raise_exception(EXERROR);
-
-		goto out;
+	if (cmdentry.cmdtype != CMDBUILTIN
+	 || !(IS_BUILTIN_REGULAR(cmdentry.u.cmd))
+	) {
+		path = path ? path : pathval();
+		find_command(argv[0], &cmdentry, cmd_flag | DO_ERR, path);
 	}
 
 	jp = NULL;
 
 	/* Execute the command. */
 	switch (cmdentry.cmdtype) {
+	case CMDUNKNOWN:
+		status = 127;
+		flush_stdout_stderr();
+		goto bail;
+
 	default: {
 
 #if ENABLE_FEATURE_SH_STANDALONE \
@@ -10349,7 +10351,7 @@ evalcommand(union node *cmd, int flags)
 			 * and/or wait for user input ineligible for NOFORK:
 			 * for example, "yes" or "rm" (rm -i waits for input).
 			 */
-			status = run_nofork_applet(applet_no, argv);
+			exitstatus = run_nofork_applet(applet_no, argv);
 			environ = sv_environ;
 			/*
 			 * Try enabling NOFORK for "yes" applet.
@@ -10382,16 +10384,10 @@ evalcommand(union node *cmd, int flags)
 			FORCE_INT_ON;
 			/* fall through to exec'ing external program */
 		}
-		listsetvar(varlist.list, VEXPORT|VSTACK);
 		shellexec(argv[0], argv, path, cmdentry.u.index);
 		/* NOTREACHED */
 	} /* default */
 	case CMDBUILTIN:
-		if (spclbltin > 0 || argc == 0) {
-			poplocalvars(1);
-			if (cmd_is_exec && argc > 1)
-				listsetvar(varlist.list, VEXPORT);
-		}
 		if (evalbltin(cmdentry.u.cmd, argc, argv, flags)
 		 && !(exception_type == EXERROR && spclbltin <= 0)
 		) {
@@ -13538,11 +13534,8 @@ find_command(char *name, struct cmdentry *entry, int act, const char *path)
 /* #if ENABLE_FEATURE_SH_STANDALONE... moved after builtin check */
 
 	updatetbl = (path == pathval());
-	if (!updatetbl) {
+	if (!updatetbl)
 		act |= DO_ALTPATH;
-		if (strstr(path, "%builtin") != NULL)
-			act |= DO_ALTBLTIN;
-	}
 
 	/* If name is in the table, check answer will be ok */
 	cmdp = cmdlookup(name, 0);
@@ -13555,16 +13548,19 @@ find_command(char *name, struct cmdentry *entry, int act, const char *path)
 			abort();
 #endif
 		case CMDNORMAL:
-			bit = DO_ALTPATH;
+			bit = DO_ALTPATH | DO_REGBLTIN;
 			break;
 		case CMDFUNCTION:
 			bit = DO_NOFUNC;
 			break;
 		case CMDBUILTIN:
-			bit = IS_BUILTIN_REGULAR(cmdp->param.cmd) ? 0 : DO_ALTBLTIN;
+			bit = IS_BUILTIN_REGULAR(cmdp->param.cmd) ? 0 : DO_REGBLTIN;
 			break;
 		}
 		if (act & bit) {
+			if (act & bit & DO_REGBLTIN)
+				goto fail;
+
 			updatetbl = 0;
 			cmdp = NULL;
 		} else if (cmdp->rehash == 0)
@@ -13577,13 +13573,14 @@ find_command(char *name, struct cmdentry *entry, int act, const char *path)
 	if (bcmd) {
 		if (IS_BUILTIN_REGULAR(bcmd))
 			goto builtin_success;
-		if (act & DO_ALTPATH) {
-			if (!(act & DO_ALTBLTIN))
-				goto builtin_success;
-		} else if (builtinloc <= 0) {
+		if (act & DO_ALTPATH)
 			goto builtin_success;
-		}
+		if (builtinloc <= 0)
+			goto builtin_success;
 	}
+
+	if (act & DO_REGBLTIN)
+		goto fail;
 
 #if ENABLE_FEATURE_SH_STANDALONE
 	{
@@ -13688,6 +13685,7 @@ find_command(char *name, struct cmdentry *entry, int act, const char *path)
 #endif
 		ash_msg("%s: %s", name, errmsg(e, "not found"));
 	}
+ fail:
 	entry->cmdtype = CMDUNKNOWN;
 	return;
 
