@@ -11607,7 +11607,7 @@ list(int nlflag)
 
 	n1 = NULL;
 	for (;;) {
-		switch (peektoken()) {
+		switch (readtoken()) {
 		case TNL:
 			if (!(nlflag & 1))
 				break;
@@ -11618,9 +11618,12 @@ list(int nlflag)
 			if (!n1 && (nlflag & 1))
 				n1 = NODE_EOF;
 			parseheredoc();
+			tokpushback++;
+			lasttoken = TEOF;
 			return n1;
 		}
 
+		tokpushback++;
 		checkkwd = CHKNL | CHKKWD | CHKALIAS;
 		if (nlflag == 2 && ((1 << peektoken()) & tokendlist))
 			return n1;
@@ -12877,9 +12880,9 @@ parsebackq: {
 		if (readtoken() != TRP)
 			raise_error_unexpected_syntax(TRP);
 		setinputstring(nullstr);
-		parseheredoc();
 	}
 
+	parseheredoc();
 	heredoclist = saveheredoclist;
 
 	(*nlpp)->n = n;
