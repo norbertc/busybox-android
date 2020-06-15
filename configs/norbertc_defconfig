@@ -1,7 +1,7 @@
 #
 # Automatically generated make config: don't edit
 # Busybox version: 1.32.0.norbertc
-# Thu Feb 20 21:16:38 2020
+# Tue Jun 16 03:37:09 2020
 #
 CONFIG_HAVE_DOT_CONFIG=y
 
@@ -808,6 +808,7 @@ CONFIG_LSSCSI=y
 # CONFIG_FEATURE_MAKEDEVS_TABLE is not set
 # CONFIG_MAN is not set
 # CONFIG_MICROCOM is not set
+# CONFIG_MIM is not set
 # CONFIG_MT is not set
 CONFIG_NANDWRITE=y
 CONFIG_NANDDUMP=y
