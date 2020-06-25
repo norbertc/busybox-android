@@ -1,7 +1,7 @@
 #
 # Automatically generated make config: don't edit
 # Busybox version: 1.32.0.norbertc
-# Tue Jun 16 03:37:09 2020
+# Thu Jun 25 13:33:49 2020
 #
 CONFIG_HAVE_DOT_CONFIG=y
 
@@ -1099,6 +1099,7 @@ CONFIG_SH_IS_ASH=y
 CONFIG_BASH_IS_ASH=y
 # CONFIG_BASH_IS_HUSH is not set
 # CONFIG_BASH_IS_NONE is not set
+CONFIG_SHELL_ASH=y
 CONFIG_ASH=y
 # CONFIG_ASH_OPTIMIZE_FOR_SIZE is not set
 CONFIG_ASH_INTERNAL_GLOB=y
@@ -1119,6 +1120,7 @@ CONFIG_ASH_GETOPTS=y
 CONFIG_ASH_CMDCMD=y
 # CONFIG_CTTYHACK is not set
 # CONFIG_HUSH is not set
+# CONFIG_SHELL_HUSH is not set
 # CONFIG_HUSH_BASH_COMPAT is not set
 # CONFIG_HUSH_BRACE_EXPANSION is not set
 # CONFIG_HUSH_LINENO_VAR is not set
