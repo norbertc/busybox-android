@@ -116,7 +116,8 @@ lib-y += bb_regex.o
 lib-y += mntent_r.o
 #endif
 
-lib-$(CONFIG_PLATFORM_LINUX) += match_fstype.o
+lib-$(CONFIG_MOUNT) += match_fstype.o
+lib-$(CONFIG_UMOUNT) += match_fstype.o
 
 lib-$(CONFIG_FEATURE_UTMP) += utmp.o
 
